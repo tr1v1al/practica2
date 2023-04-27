@@ -7,13 +7,12 @@
 
 // Tipo de dato para la ubicación
 struct location{
-  int row;
-  int col;
+  int row, col;
   bool operator==(const location &loc) const {
     return row == loc.row && col == loc.col;
   }
   bool operator!=(const location &loc) const {
-    return !(row == loc.row && col == loc.col);
+    return !(*this == loc);
   }
   bool operator<(const location &loc) const {
     return row < loc.row || row == loc.row && col < loc.col;
@@ -30,8 +29,7 @@ struct stateL01{
     compass_pl == st.compass_pl && compass_sl == st.compass_sl;
   }
   bool operator!=(const stateL01 & st) const {
-    return !(player == st.player && sleep == st.sleep && 
-    compass_pl == st.compass_pl && compass_sl == st.compass_sl);
+    return !(*this == st);
   }
   bool operator<(const stateL01 & st) const {
     return player < st.player || player == st.player && sleep < st.sleep ||
@@ -43,8 +41,7 @@ struct stateL01{
 
 // Tipo de dato para el nodo del nivel 0-1
 struct nodeL01{
-  stateL01 st;
-  stateL01 parent;
+  stateL01 st, parent;
   Action act;
   bool operator==(const nodeL01 & node) const {
     return st == node.st;
@@ -53,6 +50,47 @@ struct nodeL01{
     return st < node.st;
   }  
 };
+
+// Tipo de dato para el nodo del nivel 2-3
+struct stateL23 {
+  stateL01 pos;
+  int player_item, sleep_item;  // 0 si no tiene nada, 1 si zapatos, 2 si bikini
+
+  bool operator==(const stateL23 & st) const {
+    return pos == st.pos && player_item == st.player_item && sleep_item == st.sleep_item;
+  }
+  bool operator!=(const stateL23 & st) const {
+    return !(*this == st);
+  }
+  bool operator<(const stateL23 & st) const {
+    return pos < st.pos || pos == st.pos && player_item < st.player_item || 
+    pos == st.pos && player_item == st.player_item && sleep_item < st.sleep_item;
+  } 
+};
+
+// Tipo de dato para el nodo del nivel 2-3
+struct nodeL23 {
+  stateL23 st, parent;
+  int g, h, f;
+  Action act;
+  bool operator==(const nodeL23 & node) const {
+    return st == node.st;
+  }
+  bool operator<(const nodeL23 & node) const {
+    return st < node.st;
+  } 
+};
+
+// Clase comparadora para el min heap necesario en niveles 2-3
+class myComparator
+{
+public:
+    int operator() (const nodeL23& n1, const nodeL23& n2)
+    {
+        return n1.f > n2.f;
+    }
+};
+
 
 
 class ComportamientoJugador : public Comportamiento {
