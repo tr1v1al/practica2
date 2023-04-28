@@ -293,37 +293,6 @@ list<Action> getPlanLvl2(stateL01 start, location target, const vector<vector<un
 		if (explored.find(aux_nd) == explored.end()) {
 			frontier.push(aux_nd);
 		}
-		/*
-		bool sleepInFOV = viscon(curr_node.st.pos);
-		if (sleepInFOV) {
-			// Generamos hijo actSON_FORWARD
-			cost = actionCost(curr_node.st.sleep_item, actSON_FORWARD, curr_node.st.pos.sleep, map);
-			aux_st.pos = generateChild(actSON_FORWARD, curr_node.st.pos, map);
-			aux_st.player_item = curr_node.st.player_item;
-			aux_st.sleep_item = currItem(curr_node.st.sleep_item, aux_st.pos.sleep, map);
-			aux_nd = {aux_st, curr_node.st, 0, 0, curr_node.f + cost, actSON_FORWARD};
-			if (explored.find(aux_nd) == explored.end()) {
-				frontier.push(aux_nd);
-			}
-			// Generamos hijos actSON_TURN_SR y actSON_TURN_SL		
-			cost = actionCost(curr_node.st.sleep_item, actSON_TURN_SR, curr_node.st.pos.sleep, map);
-			aux_st.pos = generateChild(actSON_TURN_SR, curr_node.st.pos, map);
-			aux_st.player_item = curr_node.st.player_item;
-			aux_st.sleep_item = curr_node.st.sleep_item;
-			aux_nd = {aux_st, curr_node.st, 0, 0, curr_node.f + cost, actSON_TURN_SR};
-			if (explored.find(aux_nd) == explored.end()) {
-				frontier.push(aux_nd);
-			}
-			cost = actionCost(curr_node.st.sleep_item, actSON_TURN_SL, curr_node.st.pos.sleep, map);
-			aux_st.pos = generateChild(actSON_TURN_SL, curr_node.st.pos, map);
-			aux_st.player_item = curr_node.st.player_item;
-			aux_st.sleep_item = curr_node.st.sleep_item;
-			aux_nd = {aux_st, curr_node.st, 0, 0, curr_node.f + cost, actSON_TURN_SL};
-			if (explored.find(aux_nd) == explored.end()) {
-				frontier.push(aux_nd);
-			}
-		}
-		*/
 
 		// Elegimos nodo actual. Tiene que ser uno de la frontera
 		// que no haya sido explorado

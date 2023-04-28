@@ -70,8 +70,9 @@ struct stateL23 {
 
 // Tipo de dato para el nodo del nivel 2-3
 struct nodeL23 {
-  stateL23 st, parent;
-  int g, h, f;
+  stateL23 st;
+  mutable stateL23 parent;
+  mutable int g, h, f;
   Action act;
   bool operator==(const nodeL23 & node) const {
     return st == node.st;
