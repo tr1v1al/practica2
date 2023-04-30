@@ -71,7 +71,7 @@ Action ComportamientoJugador::think(Sensores sensores)
 					plan = getPlanLvl2(st01, goal_loc, mapaResultado);
 					break;
 				case 3:
-					plan = getPlanLvl3(st01, goal_loc, mapaResultado);
+					//plan = getPlanLvl3(st01, goal_loc, mapaResultado);
 					break;
 			}
 			// Para visualizar el estado de nivel 0-1 es válido incluso para niveles 2-3
@@ -245,17 +245,16 @@ list<Action> getPlanLvl1(stateL01 start, location target, const vector<vector<un
 } 
 
 list<Action> getPlanLvl2(stateL01 start, location target, const vector<vector<unsigned char>> &map) {
-	priority_queue <nodeL23, vector<nodeL23>, myComparator > frontier;
-	set<nodeL23> explored;
+	priority_queue <nodeL23> frontier;
+	set<stateL23, myComparator1> explored;
 	list<Action> plan;
 	stateL23 aux_st;	
 	nodeL23 aux_nd;	
 
-	stateL23 root_state = {{{-1,-1}, {-1,-1}, norte, norte}, 0, 0};
 	int pl_it = currItem(0, start.player, map);
 	int sl_it = currItem(0, start.sleep, map);
 	aux_st = {start, pl_it, sl_it};
-	nodeL23 curr_node = {aux_st, root_state, 0, 0 ,0 , actIDLE};
+	nodeL23 curr_node = {aux_st, plan, 0, 0 ,0 , actIDLE};
 	int cost = 0;
 
 	bool solutionFound = start.player == target;
@@ -263,18 +262,21 @@ list<Action> getPlanLvl2(stateL01 start, location target, const vector<vector<un
 	
 	while (!solutionFound && !frontier.empty()) {
 		frontier.pop();
-		explored.insert(curr_node);
-		if (curr_node.st.pos.player == target) {
-			solutionFound = true;
-			break;	
-		} 
+		explored.insert(curr_node.st);
+
 		// Generamos hijo actFORWARD
 		cost = actionCost(curr_node.st.player_item, actFORWARD, curr_node.st.pos.player, map);
 		aux_st.pos = generateChild(actFORWARD, curr_node.st.pos, map);
 		aux_st.player_item = currItem(curr_node.st.player_item, aux_st.pos.player, map);
 		aux_st.sleep_item = curr_node.st.sleep_item;
-		aux_nd = {aux_st, curr_node.st, 0, 0, curr_node.f + cost, actFORWARD};
-		if (explored.find(aux_nd) == explored.end()) {
+		aux_nd = {aux_st, curr_node.path, 0, 0, curr_node.f + cost, actFORWARD};
+		if (aux_st.pos.player == target) {
+			aux_nd.path.push_back(actFORWARD);
+			curr_node = aux_nd;
+			solutionFound = true;
+			break;	
+		} else if (explored.find(aux_nd.st) == explored.end()) {
+			aux_nd.path.push_back(actFORWARD);
 			frontier.push(aux_nd);
 		}
 
@@ -283,8 +285,9 @@ list<Action> getPlanLvl2(stateL01 start, location target, const vector<vector<un
 		aux_st.pos = generateChild(actTURN_R, curr_node.st.pos, map);
 		aux_st.player_item = curr_node.st.player_item;
 		aux_st.sleep_item = curr_node.st.sleep_item;
-		aux_nd = {aux_st, curr_node.st, 0, 0, curr_node.f + cost, actTURN_R};
-		if (explored.find(aux_nd) == explored.end()) {
+		aux_nd = {aux_st, curr_node.path, 0, 0, curr_node.f + cost, actTURN_R};
+		if (explored.find(aux_nd.st) == explored.end()) {
+			aux_nd.path.push_back(actTURN_R);
 			frontier.push(aux_nd);
 		}
 
@@ -292,15 +295,16 @@ list<Action> getPlanLvl2(stateL01 start, location target, const vector<vector<un
 		aux_st.pos = generateChild(actTURN_L, curr_node.st.pos, map);
 		aux_st.player_item = curr_node.st.player_item;
 		aux_st.sleep_item = curr_node.st.sleep_item;
-		aux_nd = {aux_st, curr_node.st, 0, 0, curr_node.f + cost, actTURN_L};
-		if (explored.find(aux_nd) == explored.end()) {
+		aux_nd = {aux_st, curr_node.path, 0, 0, curr_node.f + cost, actTURN_L};
+		if (explored.find(aux_nd.st) == explored.end()) {
+			aux_nd.path.push_back(actTURN_L);
 			frontier.push(aux_nd);
 		}
 
 		// Elegimos nodo actual. Tiene que ser uno de la frontera
 		// que no haya sido explorado
 		curr_node = frontier.empty() ? curr_node : frontier.top();
-		while (!frontier.empty() && explored.find(curr_node) != explored.end()) {
+		while (!frontier.empty() && explored.find(curr_node.st) != explored.end()) {
 			frontier.pop();
 			curr_node = frontier.empty() ? curr_node : frontier.top();
 		}
@@ -308,28 +312,22 @@ list<Action> getPlanLvl2(stateL01 start, location target, const vector<vector<un
 
 	// Recuperamos la solución
 	if (solutionFound) {
-		auto it = explored.begin();
-		while (curr_node.parent != root_state) {
-			plan.push_front(curr_node.act);
-			curr_node.st = curr_node.parent;
-			it = explored.find(curr_node);
-			curr_node = *it;
-		}
+		plan = curr_node.path;
 	}
 
 	return plan;
 }
-
+/*
 list<Action> getPlanLvl3(stateL01 start, location target, const vector<vector<unsigned char>> &map) {
 	priority_queue <nodeL23, vector<nodeL23>, myComparator > frontier;
-	set<nodeL23> explored;
+	set<nodeL23, myComparator1> explored;
 	list<Action> plan;
 	stateL23 aux_st;	
 	nodeL23 aux_nd;	
 
-	stateL23 root_state = {{{-1,-1}, {-1,-1}, norte, norte}, 0, 0};
 	int pl_it = currItem(0, start.player, map);
 	int sl_it = currItem(0, start.sleep, map);
+	stateL23 root_state = {{{-1,-1}, {-1,-1}, norte, norte}, pl_it, sl_it};
 	aux_st = {start, pl_it, sl_it};
 	nodeL23 curr_node = {aux_st, root_state, 0, 0 ,0 , actIDLE};
 	int g = 0, h = 0;
@@ -340,10 +338,7 @@ list<Action> getPlanLvl3(stateL01 start, location target, const vector<vector<un
 	while (!solutionFound && !frontier.empty()) {
 		frontier.pop();
 		explored.insert(curr_node);
-		if (curr_node.st.pos.sleep == target) {
-			solutionFound = true;
-			break;	
-		}
+
 		// Generamos hijo actFORWARD
 		aux_st.pos = generateChild(actFORWARD, curr_node.st.pos, map);
 		aux_st.player_item = currItem(curr_node.st.player_item, aux_st.pos.player, map);
@@ -356,7 +351,7 @@ list<Action> getPlanLvl3(stateL01 start, location target, const vector<vector<un
 			frontier.push(aux_nd);
 		}
 
-		// Generamos hijos actTURN_R y actTURN_L
+		// Generamos hijos actTURN_R y actTURN_R
 		aux_st.pos = generateChild(actTURN_R, curr_node.st.pos, map);
 		aux_st.player_item = curr_node.st.player_item;
 		aux_st.sleep_item = curr_node.st.sleep_item;
@@ -389,7 +384,11 @@ list<Action> getPlanLvl3(stateL01 start, location target, const vector<vector<un
 				+ curr_node.g;
 			h = heuristic(aux_st.pos, target);
 			aux_nd = {aux_st, curr_node.st, g, h, g+h, actSON_FORWARD};
-			if (explored.find(aux_nd) == explored.end()) {
+			if (aux_st.pos.sleep == target) {
+				curr_node = aux_nd;
+				solutionFound = true;
+				break;	
+			} else if (explored.find(aux_nd) == explored.end()) {
 				frontier.push(aux_nd);
 			}
 			// Generamos hijos actSON_TURN_SR y actSON_TURN_SL		
@@ -440,10 +439,7 @@ list<Action> getPlanLvl3(stateL01 start, location target, const vector<vector<un
 	return plan;
 }
 
-int heuristic(const stateL01 & st, const location & target) {
-	//return max(abs(st.sleep.row - target.row), abs(st.sleep.col - target.col));
-	return 0;
-}
+*/
 
 bool isObstacle(const location &l, const vector<vector<unsigned char>> &map) {
 	return map[l.row][l.col] == 'P' || map[l.row][l.col] == 'M';
@@ -489,12 +485,12 @@ stateL01 generateChild(const Action &a, stateL01 st, const vector<vector<unsigne
 }
 
 int currItem(int curr, const location &loc, const vector<vector<unsigned char>> &map) {
-	char c = map[loc.row][loc.col];
+	unsigned char c = map[loc.row][loc.col];
 	return c == 'D' ? 1 : (c == 'K' ? 2 : curr);
 }
 
 int actionCost(int item, const Action &a, const location &loc, const vector<vector<unsigned char>> &map) {
-	char c = map[loc.row][loc.col];
+	unsigned char c = map[loc.row][loc.col];
 	int cost = 1;
 	switch(a) {
 		case actFORWARD:
@@ -586,6 +582,10 @@ bool viscon(const stateL01 & st){
 		}
 	}
 	return false;
+}
+
+int heuristic(const stateL01 & st, const location & target) {
+	return max(abs(st.sleep.row - target.row), abs(st.sleep.col - target.col));
 }
 
 void setMatrixToNull(vector<vector<unsigned char>> &matrix){
