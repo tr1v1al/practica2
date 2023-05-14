@@ -28,6 +28,12 @@ int actionCost(int item, const Action &a, const location &loc, const vector<vect
 // Función heurística
 int heuristic(const stateL01 & st, const location & target);
 
+// Función heurística del jugador
+int heuristicPlayer(const stateL01 & st, const location & target);
+
+// Función heurística del sonámbulo
+int heuristicSleep(const stateL01 & st, const location & target);
+
 // Búsqueda en anchura del nivel 0
 list<Action> getPlanLvl0(stateL01 start, location target, const vector<vector<unsigned char>> &map);
 
@@ -40,15 +46,41 @@ list<Action> getPlanLvl2(stateL01 start, location target, const vector<vector<un
 // A* para nivel 3
 list<Action> getPlanLvl3(stateL01 start, location target, const vector<vector<unsigned char>> &map);
 
+// A* para nivel 4, devuelve coste del plan
+int getPlanLvl4(stateL23 start, location target, const vector<vector<unsigned char>> &map, list<Action> &plan);
+
+// A* para jugador
+int getPlanPlayer(stateL23 start, location target, const vector<vector<unsigned char>> &map, list<Action> &plan);
+
+// A* para sonámbulo
+int getPlanSleep(stateL23 start, location target, const vector<vector<unsigned char>> &map, list<Action> &plan);
+
 // Ponemos matriz a cero
 void setMatrixToNull(vector<vector<unsigned char>> &matrix);
+
+// Función auxiliar que devuelve las coordenadas en el mapa de la celda
+// número n(0..15) en el campo de visión actual
+pair<int,int> getCoordinates(const stateL01 & st, int n);
+
+// Función auxiliar que devuelve el índice del sonámbulo en los vectores
+// terreno/superficie
+int getSleepN(const stateL01 &st);
+
+// Función que recupera la posición del jugador en función de la posición del
+// sonámbulo y los sensores
+void recalibrate(stateL01 &st, int n);
+
+// Función auxiliar que actualiza el mapa auxiliar o el mapa resultado
+// (dependiendo de si conocemos nuestra posición) con información sobre
+// el terreno que vemos en el momento dado y devuelve el número de casillas nuevas descubiertas
+int updateMap(const stateL01 & st, Sensores sens, vector<vector<unsigned char>> & v);
 
 // Este es el método principal que se piden en la practica.
 // Tiene como entrada la información de los sensores y devuelve la acción a realizar.
 // Para ver los distintos sensores mirar fichero "comportamiento.hpp"
 Action ComportamientoJugador::think(Sensores sensores)
 {
-	Action accion = actIDLE;
+	Action action = actIDLE;
 	// Niveles 0-3
 	if (sensores.nivel != 4) {
 		if (!havePlan) {
@@ -79,7 +111,7 @@ Action ComportamientoJugador::think(Sensores sensores)
 			havePlan = true;
 		}
 		if (havePlan && plan.size() > 0) {
-			accion = plan.front();
+			action = plan.front();
 			plan.pop_front();
 		}
 		if (plan.size() == 0) {
@@ -87,9 +119,154 @@ Action ComportamientoJugador::think(Sensores sensores)
 		}
 	} else {
 		// Nivel 4
+
+		// Actualizamos objetivo actual
+		goal_loc = {sensores.destinoF, sensores.destinoC};	
+
+		if (!position_known || sensores.reset) {
+			position_known = true;
+			last_action = actWHEREIS;
+			havePlan = false;
+			return actWHEREIS;
+		}
+
+		// Actualizamos posición de los agentes
+		if (last_action == actWHEREIS) {
+			curr_state.pos = {{sensores.posF, sensores.posC}, {sensores.SONposF, sensores.SONposC},
+			sensores.sentido, sensores.SONsentido};
+ 		} else if (last_action == actFORWARD) {
+			switch (curr_state.pos.compass_pl) {
+				case norte: --curr_state.pos.player.row; break;
+				case noreste: --curr_state.pos.player.row; ++curr_state.pos.player.col; break;
+				case este: ++curr_state.pos.player.col; break;
+				case sureste: ++curr_state.pos.player.row; ++curr_state.pos.player.col; break;
+				case sur: ++curr_state.pos.player.row; break;
+				case suroeste: ++curr_state.pos.player.row; --curr_state.pos.player.col; break;
+				case oeste: --curr_state.pos.player.col; break;
+				case noroeste: --curr_state.pos.player.row; --curr_state.pos.player.col; break;			
+			}
+		} else if (last_action == actSON_FORWARD) {
+			switch (curr_state.pos.compass_sl) {
+				case norte: --curr_state.pos.sleep.row; break;
+				case noreste: --curr_state.pos.sleep.row; ++curr_state.pos.sleep.col; break;
+				case este: ++curr_state.pos.sleep.col; break;
+				case sureste: ++curr_state.pos.sleep.row; ++curr_state.pos.sleep.col; break;
+				case sur: ++curr_state.pos.sleep.row; break;
+				case suroeste: ++curr_state.pos.sleep.row; --curr_state.pos.sleep.col; break;
+				case oeste: --curr_state.pos.sleep.col; break;
+				case noroeste: --curr_state.pos.sleep.row; --curr_state.pos.sleep.col; break;			
+			}
+		} else if (last_action != actIDLE){
+			switch (last_action) {
+				case actTURN_R:
+					curr_state.pos.compass_pl = (Orientacion)((curr_state.pos.compass_pl + 2) % 8);
+					break;
+				case actTURN_L:
+					curr_state.pos.compass_pl = (Orientacion)((curr_state.pos.compass_pl + 6) % 8);
+					break;
+				case actSON_TURN_SR:
+					curr_state.pos.compass_sl = (Orientacion)((curr_state.pos.compass_sl + 1) % 8);
+					break;
+				case actSON_TURN_SL:
+					curr_state.pos.compass_sl = (Orientacion)((curr_state.pos.compass_sl + 7) % 8);
+					break;			
+			}
+		}
+
+		// Caso de haber recibido empujón de un lobo
+		if (sensores.colision) {
+			bool sleepinfov = false;
+			int n = 0;
+			for (int i = 0; i < 16; ++i) {
+				if (sensores.superficie[i] == 's') {
+					sleepinfov = true;
+					n = i;
+					break;
+				}
+			}
+			if (sleepinfov) {
+				recalibrate(curr_state.pos, n);
+				havePlan = false;
+			} else {
+				position_known = true;
+				last_action = actWHEREIS;
+				havePlan = false;
+				return actWHEREIS;
+			}
+		}
+
+		// Actualizamos el mapa y lo que llevan los agentes
+		int discovered = updateMap(curr_state.pos, sensores, mapaResultado);
+		curr_state.player_item = currItem(curr_state.player_item, curr_state.pos.player, mapaResultado);
+		curr_state.sleep_item = currItem(curr_state.sleep_item, curr_state.pos.sleep, mapaResultado);
+		
+		// Si vemos algo nuevo replanificamos
+		if (discovered > 0) {
+			havePlan = false;
+		}
+		// Si tenemos plan y el siguiente paso es hacia delante del sonámbulo,
+		// comprobamos si se queda en el FOV del jugador, si no replanificamos
+		if (havePlan && plan.front() == actSON_FORWARD) {
+			location l = nextCell(curr_state.pos.sleep, curr_state.pos.compass_sl);
+			stateL01 st = curr_state.pos;
+			st.sleep = l;			
+			bool allowed = viscon(st);
+			// Si no se queda en el FOV
+			if (!allowed) {	
+				// Caso especial de que además se mete en un punto muerto (a los dos lados del jugador)
+				// En este caso el jugador al girar lo pierde de vista, y volvería a girar para verlo,
+				// entrando en ciclo. Lo resolvemos usando planificador A* conjunto
+				int maxdist = max(abs(curr_state.pos.player.row - l.row), 
+				abs(curr_state.pos.player.col - l.col));
+				if (maxdist == 1) {
+					plan.clear();
+					getPlanLvl4(curr_state, l, mapaResultado, plan);
+					visualizePlan(curr_state.pos, plan);
+				} else {
+					havePlan = false;
+				}
+			}
+		}
+		if (!havePlan) {
+			// Calculamos plan
+			plan.clear();
+			location l = nextCell(curr_state.pos.player, curr_state.pos.compass_pl);
+			if (l == curr_state.pos.sleep) {
+				getPlanSleep(curr_state, goal_loc, mapaResultado, plan);
+			} else {
+				getPlanPlayer(curr_state, curr_state.pos.sleep, mapaResultado, plan);
+			}
+			
+			// Para visualizar el estado de nivel 0-1 es válido incluso para niveles 2-3
+			visualizePlan(curr_state.pos, plan);
+			havePlan = true;
+		}
+		if (havePlan && plan.size() > 0) {
+			action = plan.front();
+			if (action == actFORWARD && sensores.superficie[2] != '_') {
+				action = actIDLE;
+			} else if (action == actSON_FORWARD) {
+				location l = nextCell(curr_state.pos.sleep, curr_state.pos.compass_sl);
+				stateL01 st = curr_state.pos;
+				st.sleep = l;
+				int n = getSleepN(st);
+				if (sensores.superficie[n] != '_') {
+					action = actIDLE;
+				} else {
+					plan.pop_front();
+				}
+			} else {
+				plan.pop_front();
+			}
+		}
+		if (plan.size() == 0) {
+			havePlan = false;
+		}
+
+		last_action = action;		
 	}
 
-	return accion;
+	return action;
 }
 
 
@@ -348,8 +525,8 @@ list<Action> getPlanLvl3(stateL01 start, location target, const vector<vector<un
 		aux_st.pos = generateChild(actFORWARD, curr_node.st.pos, map);
 		aux_st.player_item = currItem(curr_node.st.player_item, aux_st.pos.player, map);
 		aux_st.sleep_item = curr_node.st.sleep_item;
-		g = actionCost(curr_node.st.player_item, actFORWARD, curr_node.st.pos.player, map)
-			+ curr_node.g;	
+		g = actionCost(curr_node.st.player_item, actFORWARD, curr_node.st.pos.player, map);
+		g += curr_node.g;	
 		h = heuristic(aux_st.pos, target);	
 		aux_nd = {aux_st, curr_node.st, g, h, g+h, actFORWARD};
 		if (explored.find(aux_nd) == explored.end()) {
@@ -360,8 +537,8 @@ list<Action> getPlanLvl3(stateL01 start, location target, const vector<vector<un
 		aux_st.pos = generateChild(actTURN_R, curr_node.st.pos, map);
 		aux_st.player_item = curr_node.st.player_item;
 		aux_st.sleep_item = curr_node.st.sleep_item;
-		g = actionCost(curr_node.st.player_item, actTURN_R, curr_node.st.pos.player, map)
-			+ curr_node.g;
+		g = actionCost(curr_node.st.player_item, actTURN_R, curr_node.st.pos.player, map);
+		g += curr_node.g;	
 		h = heuristic(aux_st.pos, target);
 		aux_nd = {aux_st, curr_node.st, g, h, g+h, actTURN_R};
 		if (explored.find(aux_nd) == explored.end()) {
@@ -371,8 +548,8 @@ list<Action> getPlanLvl3(stateL01 start, location target, const vector<vector<un
 		aux_st.pos = generateChild(actTURN_L, curr_node.st.pos, map);
 		aux_st.player_item = curr_node.st.player_item;
 		aux_st.sleep_item = curr_node.st.sleep_item;
-		g = actionCost(curr_node.st.player_item, actTURN_L, curr_node.st.pos.player, map)
-			+ curr_node.g;
+		g = actionCost(curr_node.st.player_item, actTURN_L, curr_node.st.pos.player, map);
+		g += curr_node.g;	
 		h = heuristic(aux_st.pos, target);
 		aux_nd = {aux_st, curr_node.st, g, h, g+h, actTURN_L};
 		if (explored.find(aux_nd) == explored.end()) {
@@ -385,8 +562,8 @@ list<Action> getPlanLvl3(stateL01 start, location target, const vector<vector<un
 			aux_st.pos = generateChild(actSON_FORWARD, curr_node.st.pos, map);
 			aux_st.player_item = curr_node.st.player_item;
 			aux_st.sleep_item = currItem(curr_node.st.sleep_item, aux_st.pos.sleep, map);
-			g = actionCost(curr_node.st.sleep_item, actSON_FORWARD, curr_node.st.pos.sleep, map)
-				+ curr_node.g;
+			g = actionCost(curr_node.st.sleep_item, actSON_FORWARD, curr_node.st.pos.sleep, map);
+			g += curr_node.g;	
 			h = heuristic(aux_st.pos, target);
 			aux_nd = {aux_st, curr_node.st, g, h, g+h, actSON_FORWARD};
 			if (explored.find(aux_nd) == explored.end()) {
@@ -396,8 +573,8 @@ list<Action> getPlanLvl3(stateL01 start, location target, const vector<vector<un
 			aux_st.pos = generateChild(actSON_TURN_SR, curr_node.st.pos, map);
 			aux_st.player_item = curr_node.st.player_item;
 			aux_st.sleep_item = curr_node.st.sleep_item;
-			g = actionCost(curr_node.st.sleep_item, actSON_TURN_SR, curr_node.st.pos.sleep, map)
-				+ curr_node.g;
+			g = actionCost(curr_node.st.sleep_item, actSON_TURN_SR, curr_node.st.pos.sleep, map);
+			g += curr_node.g;	
 			h = heuristic(aux_st.pos, target);
 			aux_nd = {aux_st, curr_node.st, g, h, g+h, actSON_TURN_SR};
 			if (explored.find(aux_nd) == explored.end()) {
@@ -407,8 +584,8 @@ list<Action> getPlanLvl3(stateL01 start, location target, const vector<vector<un
 			aux_st.pos = generateChild(actSON_TURN_SL, curr_node.st.pos, map);
 			aux_st.player_item = curr_node.st.player_item;
 			aux_st.sleep_item = curr_node.st.sleep_item;
-			g = actionCost(curr_node.st.sleep_item, actSON_TURN_SL, curr_node.st.pos.sleep, map)
-				+ curr_node.g;
+			g = actionCost(curr_node.st.sleep_item, actSON_TURN_SL, curr_node.st.pos.sleep, map);
+			g += curr_node.g;	
 			h = heuristic(aux_st.pos, target);
 			aux_nd = {aux_st, curr_node.st, g, h, g+h, actSON_TURN_SL};
 			if (explored.find(aux_nd) == explored.end()) {
@@ -440,9 +617,315 @@ list<Action> getPlanLvl3(stateL01 start, location target, const vector<vector<un
 	return plan;
 }
 
+int getPlanLvl4(stateL23 start, location target, const vector<vector<unsigned char>> &map, list<Action> &plan) {
+	priority_queue <nodeL23, vector<nodeL23>, myComparator > frontier;
+	set<nodeL23> explored;
+	stateL23 aux_st;	
+	nodeL23 aux_nd;	
+
+	stateL23 root_state = {{{-1,-1}, {-1,-1}, norte, norte}, 0, 0};
+	nodeL23 curr_node = {start, root_state, 0, 0 ,0 , actIDLE};
+	int g = 0, h = 0, cost = 0;
+	bool solutionFound = false, sleepInFOV = false;
+	frontier.push(curr_node);
+	
+	while (!frontier.empty()) {
+		frontier.pop();
+		explored.insert(curr_node);
+		if (curr_node.st.pos.sleep == target) {
+			solutionFound = true;
+			break;	
+		} 
+		// Generamos hijo actFORWARD
+		aux_st.pos = generateChild(actFORWARD, curr_node.st.pos, map);
+		aux_st.player_item = currItem(curr_node.st.player_item, aux_st.pos.player, map);
+		aux_st.sleep_item = curr_node.st.sleep_item;
+		g = actionCost(curr_node.st.player_item, actFORWARD, curr_node.st.pos.player, map);
+		g += curr_node.g;	
+		h = heuristic(aux_st.pos, target);	
+		aux_nd = {aux_st, curr_node.st, g, h, g+h, actFORWARD};
+		if (explored.find(aux_nd) == explored.end()) {
+			frontier.push(aux_nd);
+		}
+
+		// Generamos hijos actTURN_R y actTURN_L
+		aux_st.pos = generateChild(actTURN_R, curr_node.st.pos, map);
+		aux_st.player_item = curr_node.st.player_item;
+		aux_st.sleep_item = curr_node.st.sleep_item;
+		g = actionCost(curr_node.st.player_item, actTURN_R, curr_node.st.pos.player, map);
+		g += curr_node.g;	
+		h = heuristic(aux_st.pos, target);
+		aux_nd = {aux_st, curr_node.st, g, h, g+h, actTURN_R};
+		if (explored.find(aux_nd) == explored.end()) {
+			frontier.push(aux_nd);
+		}
+
+		aux_st.pos = generateChild(actTURN_L, curr_node.st.pos, map);
+		aux_st.player_item = curr_node.st.player_item;
+		aux_st.sleep_item = curr_node.st.sleep_item;
+		g = actionCost(curr_node.st.player_item, actTURN_L, curr_node.st.pos.player, map);
+		g += curr_node.g;	
+		h = heuristic(aux_st.pos, target);
+		aux_nd = {aux_st, curr_node.st, g, h, g+h, actTURN_L};
+		if (explored.find(aux_nd) == explored.end()) {
+			frontier.push(aux_nd);
+		}
+		
+		sleepInFOV = viscon(curr_node.st.pos);
+		if (sleepInFOV) {
+			// Generamos hijo actSON_FORWARD
+			aux_st.pos = generateChild(actSON_FORWARD, curr_node.st.pos, map);
+			sleepInFOV = viscon(aux_st.pos);
+			// Solo permitimos que el sonámbulo se mueva hacia adelante si se mantiene
+			// en el FOV del jugador (en caso contrario podría caerse por un precipicio
+			// inexplorado o chocar con un NPC)
+			if (sleepInFOV) {
+				aux_st.player_item = curr_node.st.player_item;
+				aux_st.sleep_item = currItem(curr_node.st.sleep_item, aux_st.pos.sleep, map);
+				g = actionCost(curr_node.st.sleep_item, actSON_FORWARD, curr_node.st.pos.sleep, map);
+				g += curr_node.g;	
+				h = heuristic(aux_st.pos, target);
+				aux_nd = {aux_st, curr_node.st, g, h, g+h, actSON_FORWARD};
+				if (explored.find(aux_nd) == explored.end()) {
+					frontier.push(aux_nd);
+				}
+			}
+
+			// Generamos hijos actSON_TURN_SR y actSON_TURN_SL		
+			aux_st.pos = generateChild(actSON_TURN_SR, curr_node.st.pos, map);
+			aux_st.player_item = curr_node.st.player_item;
+			aux_st.sleep_item = curr_node.st.sleep_item;
+			g = actionCost(curr_node.st.sleep_item, actSON_TURN_SR, curr_node.st.pos.sleep, map);
+			g += curr_node.g;	
+			h = heuristic(aux_st.pos, target);
+			aux_nd = {aux_st, curr_node.st, g, h, g+h, actSON_TURN_SR};
+			if (explored.find(aux_nd) == explored.end()) {
+				frontier.push(aux_nd);
+			}
+			
+			aux_st.pos = generateChild(actSON_TURN_SL, curr_node.st.pos, map);
+			aux_st.player_item = curr_node.st.player_item;
+			aux_st.sleep_item = curr_node.st.sleep_item;
+			g = actionCost(curr_node.st.sleep_item, actSON_TURN_SL, curr_node.st.pos.sleep, map);
+			g += curr_node.g;	
+			h = heuristic(aux_st.pos, target);
+			aux_nd = {aux_st, curr_node.st, g, h, g+h, actSON_TURN_SL};
+			if (explored.find(aux_nd) == explored.end()) {
+				frontier.push(aux_nd);
+			}
+		}
+		
+
+		// Elegimos nodo actual. Tiene que ser uno de la frontera
+		// que no haya sido explorado
+		curr_node = frontier.empty() ? curr_node : frontier.top();
+		while (!frontier.empty() && explored.find(curr_node) != explored.end()) {
+			frontier.pop();
+			curr_node = frontier.empty() ? curr_node : frontier.top();
+		}
+	}
+
+	// Recuperamos la solución
+	if (solutionFound) {
+		auto it = explored.begin();
+		cost = curr_node.f;
+		while (curr_node.parent != root_state) {
+			plan.push_front(curr_node.act);
+			curr_node.st = curr_node.parent;
+			it = explored.find(curr_node);
+			curr_node = *it;
+		}
+	}
+
+	return cost;	
+}
+
+int getPlanPlayer(stateL23 start, location target, const vector<vector<unsigned char>> &map, list<Action> &plan) {
+	priority_queue <nodeL23, vector<nodeL23>, myComparator > frontier;
+	set<nodeL23> explored;
+	stateL23 aux_st;	
+	nodeL23 aux_nd;	
+
+	stateL23 root_state = {{{-1,-1}, {-1,-1}, norte, norte}, 0, 0};
+	nodeL23 curr_node = {start, root_state, 0, 0 ,0 , actIDLE};
+	int g = 0, h = 0, cost = 0;
+	bool solutionFound = false;
+
+	frontier.push(curr_node);
+	
+	while (!frontier.empty()) {
+		frontier.pop();
+		explored.insert(curr_node);
+		
+		// Condición de parada
+		if (curr_node.st.pos.player == target) {
+			solutionFound = true;
+			break;	
+		} else if (curr_node.st.pos.sleep == target){
+			// Si el objetivo es el sonámbulo y con un actFORWARD chocamos con él
+			// hemos llegado al objetivo
+			location l = nextCell(curr_node.st.pos.player, curr_node.st.pos.compass_pl);
+			if (l == target) {
+				solutionFound = true;
+				break;
+			}
+		}
+
+		// Generamos hijo actFORWARD
+		aux_st.pos = generateChild(actFORWARD, curr_node.st.pos, map);
+		aux_st.player_item = currItem(curr_node.st.player_item, aux_st.pos.player, map);
+		aux_st.sleep_item = curr_node.st.sleep_item;
+		g = actionCost(curr_node.st.player_item, actFORWARD, curr_node.st.pos.player, map);
+		g += curr_node.g;	
+		h = heuristicPlayer(aux_st.pos, target);	
+		aux_nd = {aux_st, curr_node.st, g, h, g+h, actFORWARD};
+		if (explored.find(aux_nd) == explored.end()) {
+			frontier.push(aux_nd);
+		}
+
+		// Generamos hijos actTURN_R y actTURN_L
+		aux_st.pos = generateChild(actTURN_R, curr_node.st.pos, map);
+		aux_st.player_item = curr_node.st.player_item;
+		aux_st.sleep_item = curr_node.st.sleep_item;
+		g = actionCost(curr_node.st.player_item, actTURN_R, curr_node.st.pos.player, map);
+		g += curr_node.g;	
+		h = heuristicPlayer(aux_st.pos, target);
+		aux_nd = {aux_st, curr_node.st, g, h, g+h, actTURN_R};
+		if (explored.find(aux_nd) == explored.end()) {
+			frontier.push(aux_nd);
+		}
+
+		aux_st.pos = generateChild(actTURN_L, curr_node.st.pos, map);
+		aux_st.player_item = curr_node.st.player_item;
+		aux_st.sleep_item = curr_node.st.sleep_item;
+		g = actionCost(curr_node.st.player_item, actTURN_L, curr_node.st.pos.player, map);
+		g += curr_node.g;	
+		h = heuristicPlayer(aux_st.pos, target);
+		aux_nd = {aux_st, curr_node.st, g, h, g+h, actTURN_L};
+		if (explored.find(aux_nd) == explored.end()) {
+			frontier.push(aux_nd);
+		}
+
+		// Elegimos nodo actual. Tiene que ser uno de la frontera
+		// que no haya sido explorado
+		curr_node = frontier.empty() ? curr_node : frontier.top();
+		while (!frontier.empty() && explored.find(curr_node) != explored.end()) {
+			frontier.pop();
+			curr_node = frontier.empty() ? curr_node : frontier.top();
+		}
+	}
+
+	// Recuperamos la solución
+	if (solutionFound) {
+		auto it = explored.begin();
+		cost = curr_node.f;
+		while (curr_node.parent != root_state) {
+			plan.push_front(curr_node.act);
+			curr_node.st = curr_node.parent;
+			it = explored.find(curr_node);
+			curr_node = *it;
+		}
+	}
+
+	return cost;	
+}
+
+int getPlanSleep(stateL23 start, location target, const vector<vector<unsigned char>> &map, list<Action> &plan) {
+	priority_queue <nodeL23, vector<nodeL23>, myComparator > frontier;
+	set<nodeL23> explored;
+	stateL23 aux_st;	
+	nodeL23 aux_nd;	
+
+	stateL23 root_state = {{{-1,-1}, {-1,-1}, norte, norte}, 0, 0};
+	nodeL23 curr_node = {start, root_state, 0, 0 ,0 , actIDLE};
+	int g = 0, h = 0, cost = 0;
+	bool solutionFound = false, sleepInFOV = false;
+
+	frontier.push(curr_node);
+	
+	while (!frontier.empty()) {
+		frontier.pop();
+		explored.insert(curr_node);
+
+		if (curr_node.st.pos.sleep == target) {
+			solutionFound = true;
+			break;	
+		} 
+		
+		// Generamos hijo actSON_FORWARD
+		aux_st.pos = generateChild(actSON_FORWARD, curr_node.st.pos, map);
+		aux_st.player_item = curr_node.st.player_item;
+		aux_st.sleep_item = currItem(curr_node.st.sleep_item, aux_st.pos.sleep, map);
+		g = actionCost(curr_node.st.sleep_item, actSON_FORWARD, curr_node.st.pos.sleep, map);
+		g += curr_node.g;	
+		h = heuristicSleep(aux_st.pos, target);
+		aux_nd = {aux_st, curr_node.st, g, h, g+h, actSON_FORWARD};
+		if (explored.find(aux_nd) == explored.end()) {
+			frontier.push(aux_nd);
+		}
+
+		// Generamos hijos actSON_TURN_SR y actSON_TURN_SL		
+		aux_st.pos = generateChild(actSON_TURN_SR, curr_node.st.pos, map);
+		aux_st.player_item = curr_node.st.player_item;
+		aux_st.sleep_item = curr_node.st.sleep_item;
+		g = actionCost(curr_node.st.sleep_item, actSON_TURN_SR, curr_node.st.pos.sleep, map);
+		g += curr_node.g;	
+		h = heuristicSleep(aux_st.pos, target);
+		aux_nd = {aux_st, curr_node.st, g, h, g+h, actSON_TURN_SR};
+		if (explored.find(aux_nd) == explored.end()) {
+			frontier.push(aux_nd);
+		}
+		
+		aux_st.pos = generateChild(actSON_TURN_SL, curr_node.st.pos, map);
+		aux_st.player_item = curr_node.st.player_item;
+		aux_st.sleep_item = curr_node.st.sleep_item;
+		g = actionCost(curr_node.st.sleep_item, actSON_TURN_SL, curr_node.st.pos.sleep, map);
+		g += curr_node.g;	
+		h = heuristicSleep(aux_st.pos, target);
+		aux_nd = {aux_st, curr_node.st, g, h, g+h, actSON_TURN_SL};
+		if (explored.find(aux_nd) == explored.end()) {
+			frontier.push(aux_nd);
+		}
+
+		// Elegimos nodo actual. Tiene que ser uno de la frontera
+		// que no haya sido explorado
+		curr_node = frontier.empty() ? curr_node : frontier.top();
+		while (!frontier.empty() && explored.find(curr_node) != explored.end()) {
+			frontier.pop();
+			curr_node = frontier.empty() ? curr_node : frontier.top();
+		}
+	}
+
+	// Recuperamos la solución
+	if (solutionFound) {
+		auto it = explored.begin();
+		cost = curr_node.f;
+		while (curr_node.parent != root_state) {
+			plan.push_front(curr_node.act);
+			curr_node.st = curr_node.parent;
+			it = explored.find(curr_node);
+			curr_node = *it;
+		}
+	}
+
+	return cost;	
+}
+
 int heuristic(const stateL01 & st, const location & target) {
-	//return max(abs(st.sleep.row - target.row), abs(st.sleep.col - target.col));
-	return 0;
+	int sleep_dist = max(abs(st.sleep.row - target.row), abs(st.sleep.col - target.col));
+	//bool diagonal = st.compass_pl == noreste || st.compass_pl == noroeste || 
+	//				st.compass_pl == sureste || st.compass_pl == suroeste;
+	int player_dist = max(max(abs(st.player.row - st.sleep.row), abs(st.player.col - st.sleep.col))-4, 0);
+	int third_dist = max(max(abs(st.sleep.row - target.row), abs(st.sleep.col - target.col))-8, 0);
+	return player_dist + sleep_dist + third_dist;
+}
+
+int heuristicPlayer(const stateL01 & st, const location & target) {
+	return max(max(abs(st.player.row - target.row), abs(st.player.col - target.col))-1, 0);
+}
+
+int heuristicSleep(const stateL01 & st, const location & target) {
+	return max(max(abs(st.sleep.row - target.row), abs(st.sleep.col - target.col))-1, 0);
 }
 
 bool isObstacle(const location &l, const vector<vector<unsigned char>> &map) {
@@ -614,3 +1097,83 @@ void ComportamientoJugador::visualizePlan(stateL01 st, const list<Action> &plan)
 	}
 }
 
+pair<int,int> getCoordinates(const stateL01 & st, int n) {
+	// Posición y orientación actual
+	Orientacion ori = st.compass_pl;
+	int x = st.player.row, y = st.player.col;
+	int r = 0, c = 0, rot_r = 0, rot_c = 0;
+	// Contador de celda de terreno
+	int count = 0;
+
+	// Calculo coordenadas de celda que interesa como si estuviesemos 
+	// situados en el origen y mirando hacia el norte/noreste
+	for (int i = 0; i < 4; ++i) {
+		for (int j = 0; j <= 2*i; ++j) {
+			if (count == n) {
+				if (ori == norte || ori == sur || ori == este || ori == oeste) {
+					r = -i;
+					c = j-i;
+				} else {
+					r = j <= i ? -i : j-2*i;
+					c = j <= i ? j : i;
+				}
+			}
+			++count;
+		}
+	}
+
+	// Rotamos
+	switch (ori) {
+	case norte: case noreste:
+		rot_r = r;
+		rot_c = c;
+		break;
+	case este: case sureste:
+		rot_r = c;
+		rot_c = -r;			
+		break;
+	case sur: case suroeste:
+		rot_r = -r;
+		rot_c = -c;			
+		break;
+	case oeste: case noroeste:
+		rot_r = -c;
+		rot_c = r;			
+		break;
+	}
+
+	// Trasladamos
+	rot_r += x;
+	rot_c += y;
+	
+	return {rot_r, rot_c};
+}
+
+int getSleepN(const stateL01 &st) {
+	pair<int,int> p = {st.sleep.row, st.sleep.col};
+	for (int i = 0; i < 16; ++i) {
+		if (getCoordinates(st, i) == p) {
+			return i;
+		}
+	}
+	return 0;
+}
+
+void recalibrate(stateL01 &st, int n) {
+	auto coord = getCoordinates(st, n);
+	st.player.row += coord.first - st.sleep.row;
+	st.player.col += coord.second - st.sleep.col;
+}
+
+int updateMap(const stateL01 & st, Sensores sens, vector<vector<unsigned char>> & v) {
+	int n = 0;
+	pair<int,int> point;
+	for (int i = 0; i < 16; ++i) {
+		point = getCoordinates(st, i);
+		if (v[point.first][point.second] == '?') {
+			++n;
+		}
+		v[point.first][point.second] = sens.terreno[i];
+	}
+	return n;
+}

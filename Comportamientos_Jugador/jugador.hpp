@@ -103,6 +103,20 @@ class ComportamientoJugador : public Comportamiento {
     // Nivel 4
     ComportamientoJugador(unsigned int size) : Comportamiento(size) {
       // Inicializar Variables de Estado
+      havePlan = false;
+      position_known = false;
+      player_item = 0;
+      sleep_item = 0;
+      for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < size; ++j) {
+          mapaResultado[i][j] = 'P';
+          mapaResultado[size-i-1][j] = 'P';
+        }
+        for (int j = 0; j < size; ++j) {
+          mapaResultado[j][i] = 'P';
+          mapaResultado[j][size-i-1] = 'P';
+        }
+      }
     }
     // Niveles 0-3
     ComportamientoJugador(std::vector< std::vector< unsigned char> > mapaR) : Comportamiento(mapaR) {
@@ -119,9 +133,12 @@ class ComportamientoJugador : public Comportamiento {
   private:
     // Declarar Variables de Estado
     list<Action> plan;  // Plan de ejecución
-    bool havePlan;    // True si tenemos plan
+    bool havePlan, position_known;    // True si tenemos plan
+    Action last_action;
     location player_loc, sleep_loc, goal_loc; // Ubicación del jugador, sonámbulo y objetivo
     Orientacion player_ori, sleep_ori;  // Orientación del jugador y el sonámbulo
+    int player_item, sleep_item;
+    stateL23 curr_state;
 };
 
 #endif
