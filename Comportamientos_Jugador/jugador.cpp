@@ -55,6 +55,9 @@ int getPlanPlayer(stateL23 start, location target, const vector<vector<unsigned 
 // A* para sonámbulo
 int getPlanSleep(stateL23 start, location target, const vector<vector<unsigned char>> &map, list<Action> &plan);
 
+// A* para poner al jugador en casilla objetivo (recarga) y al sonámbulo en su FOV
+int getPlanCharge(stateL23 start, location target, const vector<vector<unsigned char>> &map, list<Action> &plan);
+
 // Ponemos matriz a cero
 void setMatrixToNull(vector<vector<unsigned char>> &matrix);
 
@@ -69,6 +72,15 @@ int getSleepN(const stateL01 &st);
 // Función que recupera la posición del jugador en función de la posición del
 // sonámbulo y los sensores
 void recalibrate(stateL01 &st, int n);
+
+// Función que dice si renta recargar batería
+bool worthCharging(Sensores s, int elapsed, int battery, int turns);
+
+// Función que dice si no hace falta más batería
+bool stopCharging(Sensores s, int elapsed, int battery, int turns);
+
+// Función que dice si el nivel de batería es crítico
+bool criticalBattery(Sensores s, int elapsed, int battery, int turns);
 
 // Función auxiliar que actualiza el mapa auxiliar o el mapa resultado
 // (dependiendo de si conocemos nuestra posición) con información sobre
@@ -119,16 +131,9 @@ Action ComportamientoJugador::think(Sensores sensores)
 		}
 	} else {
 		// Nivel 4
-
+		int discovered = 0;
 		// Actualizamos objetivo actual
 		goal_loc = {sensores.destinoF, sensores.destinoC};	
-
-		if (!position_known || sensores.reset) {
-			position_known = true;
-			last_action = actWHEREIS;
-			havePlan = false;
-			return actWHEREIS;
-		}
 
 		// Actualizamos posición de los agentes
 		if (last_action == actWHEREIS) {
@@ -173,8 +178,35 @@ Action ComportamientoJugador::think(Sensores sensores)
 			}
 		}
 
+		// Caso de empezar la simulación o que el sonámbulo se haya reseteado
+		if (!position_known || sensores.reset) {
+			position_known = true;
+			last_action = actWHEREIS;
+			havePlan = false;
+			return actWHEREIS;
+		}
+
 		// Caso de haber recibido empujón de un lobo
+		// Nos pasamos al estado "displaced", intentamos
+		// recuperar posición a partir del sonámbulo, o con
+		// actWHEREIS si no hay alternativa
 		if (sensores.colision) {
+			displaced = true;
+			havePlan = false;
+			have_plan_battery = false;
+			follow_priority = false;
+			// Mapa auxiliar
+			int sz = aux_map.size();
+			for (int i = 0; i < sz; ++i) {
+				for (int j = 0; j < sz; ++j) {
+					aux_map[i][j] = '?';
+				}
+			}
+		}
+
+		// Si hemos sido empujados, comprobamos si está el sonámbulo
+		// para recuperar posición y volver a comportamiento normal
+		if (displaced) {
 			bool sleepinfov = false;
 			int n = 0;
 			for (int i = 0; i < 16; ++i) {
@@ -184,26 +216,123 @@ Action ComportamientoJugador::think(Sensores sensores)
 					break;
 				}
 			}
+			// Si vemos al sonámbulo, recuperamos posición.
 			if (sleepinfov) {
 				recalibrate(curr_state.pos, n);
 				havePlan = false;
-			} else {
-				position_known = true;
-				last_action = actWHEREIS;
-				havePlan = false;
-				return actWHEREIS;
+				displaced = false;
+				seek_sleep = false;
 			}
 		}
 
 		// Actualizamos el mapa y lo que llevan los agentes
-		int discovered = updateMap(curr_state.pos, sensores, mapaResultado);
-		curr_state.player_item = currItem(curr_state.player_item, curr_state.pos.player, mapaResultado);
-		curr_state.sleep_item = currItem(curr_state.sleep_item, curr_state.pos.sleep, mapaResultado);
+		if (displaced) {
+			stateL01 st = curr_state.pos;
+			st.player.row += margin;
+			st.player.col += margin;
+			discovered = updateMap(st, sensores, aux_map);
+			curr_state.player_item = currItem(curr_state.player_item, st.player, aux_map);
+		} else {
+			discovered = updateMap(curr_state.pos, sensores, mapaResultado);
+			curr_state.player_item = currItem(curr_state.player_item, curr_state.pos.player, mapaResultado);
+			curr_state.sleep_item = currItem(curr_state.sleep_item, curr_state.pos.sleep, mapaResultado);			
+		}
 		
 		// Si vemos algo nuevo replanificamos
 		if (discovered > 0) {
 			havePlan = false;
 		}
+
+		// Vemos si hay casilla de recarga si no estamos "displaced"
+		if (!displaced) {
+			bool charger = false;
+			int n = 0;
+			for (int i = 0; i < 16; ++i) {
+				if (sensores.terreno[i] == 'X') {
+					charger = true;
+					n = i;
+					break;
+				}
+			}
+			// Si hay punto de recarga
+			if (charger) {
+				auto coord = getCoordinates(curr_state.pos, n);
+				location l = {coord.first, coord.second};
+				// Lo añadimos al set de cargadores si no está
+				if (superchargers.find(l) == superchargers.end()) {
+					superchargers.insert(l);
+				}
+				// Vemos si renta recargar
+				if (sensores.terreno[0] == 'X') {
+					if (follow_priority && stopCharging(sensores, elapsed_time, spent_battery, turns_w_charging)) {
+						// Si no renta recargar, estamos en casilla de recarga y hemos recargado
+						// el turno anterior salimos
+						turns_w_charging = 0;
+						have_plan_battery = false;
+						follow_priority = false;
+						havePlan = false;
+					} else if (follow_priority) {
+						havePlan = true;
+						plan = {actIDLE};
+					}				
+				}
+				if (worthCharging(sensores, elapsed_time, spent_battery, turns_w_charging)) {
+					if (!follow_priority) {
+						follow_priority = true;
+						priority_target = l;
+						havePlan = false;
+					} else if (curr_state.pos.sleep == priority_target && 
+					!have_plan_battery || have_plan_battery && !havePlan) {
+						havePlan = true;
+						// Calculamos camino 
+						plan.clear();
+						getPlanCharge(curr_state, l, mapaResultado, plan);
+						visualizePlan(curr_state.pos, plan);
+						have_plan_battery = true;
+					}
+				}
+			} else {
+				// Vemos si tenemos niveles críticos de batería
+				if (criticalBattery(sensores, elapsed_time, spent_battery, turns_w_charging) &&
+				superchargers.size() > 0 && !follow_priority) {
+					// Max heap con puntos de recarga y sus distancias al jugador
+					priority_queue<pair<int,location>> q;
+					int distance = 0, x = curr_state.pos.player.row, y = curr_state.pos.player.col;
+					// Recorremos cargadores conocidos
+					for (auto el : superchargers) {
+						distance = (x-el.row)*(x-el.row)+(y-el.col)*(y-el.col);
+						// Si el max heap contiene 5 y su top tiene distancia mayor 
+						// que la del cargador actual lo quitamos
+						if (q.size() == 5 && q.top().first > distance) {
+							q.pop();
+						}
+						if (q.size() < 5) {
+							q.push({distance, el});
+						}
+					}
+					// Vamos al cargador con ruta de menor coste
+					int cost = 0, mincost = 9999999;
+					list<Action> p;
+					while (!q.empty()) {
+						p.clear();
+						cost = getPlanPlayer(curr_state, q.top().second, mapaResultado, p);
+						if (cost < mincost) {
+							priority_target = q.top().second;
+							mincost = cost;
+						}
+						q.pop();
+					}
+					follow_priority = true;
+				}
+			}	
+			// Si seguimos punto prioritario (recarga) cambiamos objetivo
+			if (follow_priority) {
+				goal_loc = priority_target;
+			}
+		}
+		// Siempre incrementamos contador de turnos
+		++turns_w_charging;
+
 		// Si tenemos plan y el siguiente paso es hacia delante del sonámbulo,
 		// comprobamos si se queda en el FOV del jugador, si no replanificamos
 		if (havePlan && plan.front() == actSON_FORWARD) {
@@ -230,15 +359,43 @@ Action ComportamientoJugador::think(Sensores sensores)
 		if (!havePlan) {
 			// Calculamos plan
 			plan.clear();
-			location l = nextCell(curr_state.pos.player, curr_state.pos.compass_pl);
-			if (l == curr_state.pos.sleep) {
-				getPlanSleep(curr_state, goal_loc, mapaResultado, plan);
+			// Caso de que nos hayan empujado
+			if (displaced) {
+				stateL23 st = curr_state;
+				st.pos.player.row += margin;
+				st.pos.player.col += margin;
+				st.pos.sleep.row += margin;
+				st.pos.sleep.col += margin;
+				getPlanPlayer(st, st.pos.sleep, aux_map, plan);
+				// Si estamos en el objetivo y no vemos al sonámbulo,
+				// giramos tres veces para ver si está cerca. 
+				// Si vemos que no lo encontramos ni girando, hacemos actWHEREIS
+				if (plan.size() == 0) {
+					if (!seek_sleep) {
+						plan = {actTURN_L, actTURN_L, actTURN_L};
+						seek_sleep = true;
+					} else {
+						position_known = true;
+						seek_sleep = false;
+						displaced = false;
+						last_action = actWHEREIS;
+						havePlan = false;
+						return actWHEREIS;
+					}
+				}
 			} else {
-				getPlanPlayer(curr_state, curr_state.pos.sleep, mapaResultado, plan);
+				location l = nextCell(curr_state.pos.player, curr_state.pos.compass_pl);
+				// Si el jugador está a un paso del sonámbulo, planificamos sonámbulo,
+				// si no planificamos el jugador
+				if (l == curr_state.pos.sleep) {
+					getPlanSleep(curr_state, goal_loc, mapaResultado, plan);
+				} else {
+					getPlanPlayer(curr_state, curr_state.pos.sleep, mapaResultado, plan);
+				}
+				
+				// Para visualizar el estado de nivel 0-1 es válido incluso para niveles 2-3
+				visualizePlan(curr_state.pos, plan);				
 			}
-			
-			// Para visualizar el estado de nivel 0-1 es válido incluso para niveles 2-3
-			visualizePlan(curr_state.pos, plan);
 			havePlan = true;
 		}
 		if (havePlan && plan.size() > 0) {
@@ -264,6 +421,23 @@ Action ComportamientoJugador::think(Sensores sensores)
 		}
 
 		last_action = action;		
+	}
+
+	// Actualizamos tiempo transcurrido y batería gastada en movimientos
+	if (action != actIDLE && action != actWHEREIS) {
+		++elapsed_time;
+		int cost = 0;
+		if (displaced) {
+			location l = curr_state.pos.player;
+			l.row += margin;
+			l.col += margin;
+			cost = actionCost(curr_state.player_item, action, l, aux_map);
+		} else if (action == actFORWARD || action == actTURN_L || action == actTURN_R) {
+			cost = actionCost(curr_state.player_item, action, curr_state.pos.player, mapaResultado);
+		} else {
+			cost = actionCost(curr_state.sleep_item, action, curr_state.pos.sleep, mapaResultado);
+		}
+		spent_battery += cost;
 	}
 
 	return action;
@@ -911,6 +1085,129 @@ int getPlanSleep(stateL23 start, location target, const vector<vector<unsigned c
 	return cost;	
 }
 
+int getPlanCharge(stateL23 start, location target, const vector<vector<unsigned char>> &map, list<Action> &plan) {
+	priority_queue <nodeL23, vector<nodeL23>, myComparator > frontier;
+	set<nodeL23> explored;
+	stateL23 aux_st;	
+	nodeL23 aux_nd;	
+
+	stateL23 root_state = {{{-1,-1}, {-1,-1}, norte, norte}, 0, 0};
+	nodeL23 curr_node = {start, root_state, 0, 0 ,0 , actIDLE};
+	int g = 0, h = 0, cost = 0;
+	bool solutionFound = false, sleepInFOV = false;
+	frontier.push(curr_node);
+	
+	while (!frontier.empty()) {
+		frontier.pop();
+		explored.insert(curr_node);
+		if (curr_node.st.pos.player == target && viscon(curr_node.st.pos)) {
+			solutionFound = true;
+			break;	
+		} 
+		// Generamos hijo actFORWARD
+		aux_st.pos = generateChild(actFORWARD, curr_node.st.pos, map);
+		aux_st.player_item = currItem(curr_node.st.player_item, aux_st.pos.player, map);
+		aux_st.sleep_item = curr_node.st.sleep_item;
+		g = actionCost(curr_node.st.player_item, actFORWARD, curr_node.st.pos.player, map);
+		g += curr_node.g;	
+		h = heuristic(aux_st.pos, target);	
+		aux_nd = {aux_st, curr_node.st, g, h, g+h, actFORWARD};
+		if (explored.find(aux_nd) == explored.end()) {
+			frontier.push(aux_nd);
+		}
+
+		// Generamos hijos actTURN_R y actTURN_L
+		aux_st.pos = generateChild(actTURN_R, curr_node.st.pos, map);
+		aux_st.player_item = curr_node.st.player_item;
+		aux_st.sleep_item = curr_node.st.sleep_item;
+		g = actionCost(curr_node.st.player_item, actTURN_R, curr_node.st.pos.player, map);
+		g += curr_node.g;	
+		h = heuristic(aux_st.pos, target);
+		aux_nd = {aux_st, curr_node.st, g, h, g+h, actTURN_R};
+		if (explored.find(aux_nd) == explored.end()) {
+			frontier.push(aux_nd);
+		}
+
+		aux_st.pos = generateChild(actTURN_L, curr_node.st.pos, map);
+		aux_st.player_item = curr_node.st.player_item;
+		aux_st.sleep_item = curr_node.st.sleep_item;
+		g = actionCost(curr_node.st.player_item, actTURN_L, curr_node.st.pos.player, map);
+		g += curr_node.g;	
+		h = heuristic(aux_st.pos, target);
+		aux_nd = {aux_st, curr_node.st, g, h, g+h, actTURN_L};
+		if (explored.find(aux_nd) == explored.end()) {
+			frontier.push(aux_nd);
+		}
+		
+		sleepInFOV = viscon(curr_node.st.pos);
+		if (sleepInFOV) {
+			// Generamos hijo actSON_FORWARD
+			aux_st.pos = generateChild(actSON_FORWARD, curr_node.st.pos, map);
+			sleepInFOV = viscon(aux_st.pos);
+			// Solo permitimos que el sonámbulo se mueva hacia adelante si se mantiene
+			// en el FOV del jugador (en caso contrario podría caerse por un precipicio
+			// inexplorado o chocar con un NPC)
+			if (sleepInFOV) {
+				aux_st.player_item = curr_node.st.player_item;
+				aux_st.sleep_item = currItem(curr_node.st.sleep_item, aux_st.pos.sleep, map);
+				g = actionCost(curr_node.st.sleep_item, actSON_FORWARD, curr_node.st.pos.sleep, map);
+				g += curr_node.g;	
+				h = heuristic(aux_st.pos, target);
+				aux_nd = {aux_st, curr_node.st, g, h, g+h, actSON_FORWARD};
+				if (explored.find(aux_nd) == explored.end()) {
+					frontier.push(aux_nd);
+				}
+			}
+
+			// Generamos hijos actSON_TURN_SR y actSON_TURN_SL		
+			aux_st.pos = generateChild(actSON_TURN_SR, curr_node.st.pos, map);
+			aux_st.player_item = curr_node.st.player_item;
+			aux_st.sleep_item = curr_node.st.sleep_item;
+			g = actionCost(curr_node.st.sleep_item, actSON_TURN_SR, curr_node.st.pos.sleep, map);
+			g += curr_node.g;	
+			h = heuristic(aux_st.pos, target);
+			aux_nd = {aux_st, curr_node.st, g, h, g+h, actSON_TURN_SR};
+			if (explored.find(aux_nd) == explored.end()) {
+				frontier.push(aux_nd);
+			}
+			
+			aux_st.pos = generateChild(actSON_TURN_SL, curr_node.st.pos, map);
+			aux_st.player_item = curr_node.st.player_item;
+			aux_st.sleep_item = curr_node.st.sleep_item;
+			g = actionCost(curr_node.st.sleep_item, actSON_TURN_SL, curr_node.st.pos.sleep, map);
+			g += curr_node.g;	
+			h = heuristic(aux_st.pos, target);
+			aux_nd = {aux_st, curr_node.st, g, h, g+h, actSON_TURN_SL};
+			if (explored.find(aux_nd) == explored.end()) {
+				frontier.push(aux_nd);
+			}
+		}
+		
+
+		// Elegimos nodo actual. Tiene que ser uno de la frontera
+		// que no haya sido explorado
+		curr_node = frontier.empty() ? curr_node : frontier.top();
+		while (!frontier.empty() && explored.find(curr_node) != explored.end()) {
+			frontier.pop();
+			curr_node = frontier.empty() ? curr_node : frontier.top();
+		}
+	}
+
+	// Recuperamos la solución
+	if (solutionFound) {
+		auto it = explored.begin();
+		cost = curr_node.f;
+		while (curr_node.parent != root_state) {
+			plan.push_front(curr_node.act);
+			curr_node.st = curr_node.parent;
+			it = explored.find(curr_node);
+			curr_node = *it;
+		}
+	}
+
+	return cost;
+}
+
 int heuristic(const stateL01 & st, const location & target) {
 	int sleep_dist = max(abs(st.sleep.row - target.row), abs(st.sleep.col - target.col));
 	//bool diagonal = st.compass_pl == noreste || st.compass_pl == noroeste || 
@@ -1161,8 +1458,30 @@ int getSleepN(const stateL01 &st) {
 
 void recalibrate(stateL01 &st, int n) {
 	auto coord = getCoordinates(st, n);
-	st.player.row += coord.first - st.sleep.row;
-	st.player.col += coord.second - st.sleep.col;
+	st.player.row += st.sleep.row - coord.first;
+	st.player.col += st.sleep.col - coord.second;
+}
+
+bool worthCharging(Sensores s, int elapsed, int battery, int turns) {
+	// Calculamos el promedio de batería gastado en acciones
+	double mean = static_cast<double>(battery)/elapsed;
+	// Calculamos usando la media una estimación de cuánta batería necesitaríamos
+	double estimate = mean*(s.vida);
+	// Renta recargar si la estimación es mayor que lo que tenemos actualmente
+	return estimate > s.bateria*1.25 && s.bateria < 2800 && turns > 300;
+}
+
+bool stopCharging(Sensores s, int elapsed, int battery, int turns) {
+	// Calculamos el promedio de batería gastado en acciones
+	double mean = static_cast<double>(battery)/elapsed;
+	// Calculamos usando la media una estimación de cuánta batería necesitaríamos
+	double estimate = mean*(s.vida);
+	// Renta recargar si la estimación es mayor que lo que tenemos actualmente
+	return s.bateria > estimate*1.25 || s.bateria == 3000;	
+} 
+
+bool criticalBattery(Sensores s, int elapsed, int battery, int turns) {
+	return worthCharging(s, elapsed, battery, turns) && s.bateria < 800;
 }
 
 int updateMap(const stateL01 & st, Sensores sens, vector<vector<unsigned char>> & v) {

@@ -4,6 +4,7 @@
 #include "comportamientos/comportamiento.hpp"
 
 #include <list>
+#include <set>
 
 // Tipo de dato para la ubicación
 struct location{
@@ -92,7 +93,14 @@ public:
     }
 };
 
-
+class distComp
+{
+public:
+    int operator() (const pair<int, location>& p1, const pair<int, location>& p2)
+    {
+      return p1.first < p2.first;
+    }
+};
 
 class ComportamientoJugador : public Comportamiento {
   private:
@@ -105,8 +113,15 @@ class ComportamientoJugador : public Comportamiento {
       // Inicializar Variables de Estado
       havePlan = false;
       position_known = false;
+      seek_sleep = false;
+      displaced = false;
+      have_plan_battery = false;
+      follow_priority = false;
       player_item = 0;
       sleep_item = 0;
+      spent_battery = 0;
+      elapsed_time = 0;
+      turns_w_charging = 0;
       for (int i = 0; i < 3; ++i) {
         for (int j = 0; j < size; ++j) {
           mapaResultado[i][j] = 'P';
@@ -116,6 +131,10 @@ class ComportamientoJugador : public Comportamiento {
           mapaResultado[j][i] = 'P';
           mapaResultado[j][size-i-1] = 'P';
         }
+      }
+      aux_map.resize(size+2*margin);
+      for (int i = 0; i < size+2*margin; ++i) {
+        aux_map[i].resize(size+2*margin);
       }
     }
     // Niveles 0-3
@@ -139,6 +158,13 @@ class ComportamientoJugador : public Comportamiento {
     Orientacion player_ori, sleep_ori;  // Orientación del jugador y el sonámbulo
     int player_item, sleep_item;
     stateL23 curr_state;
+    vector< vector<unsigned char>> aux_map;
+    const int margin = 30;
+    bool displaced, seek_sleep;
+    int spent_battery, elapsed_time, turns_w_charging;
+    bool have_plan_battery, follow_priority;
+    location priority_target;
+    set<location> superchargers;
 };
 
 #endif
